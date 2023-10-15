@@ -31,7 +31,7 @@ public:
 
 	}
 
-	void RandomDataInitialization() {
+	void randomDataInitialization() {
 		auto size = mVector.size();
 		for (size_t i = 0; i < size; i++) {
 			mVector[i] = RandomGeneration::randDoubleValue<-1000, 1000>();
@@ -41,7 +41,7 @@ public:
 		}
 	}
 
-	void ResultCalculation() {
+	void resultCalculation() {
 		auto size = mResult.size();
 		for (size_t i = 0; i < size; i++) {
 			mResult[i] = 0;
@@ -59,12 +59,12 @@ private:
 	DataStorage mResult;
 };
 
-void Experiment(std::ofstream& ostrm, int size) {
+void experiment(std::ofstream& ostrm, int size) {
 	SerialMatrixVectorMult mult(size);
-	mult.RandomDataInitialization();
+	mult.randomDataInitialization();
 
 	auto start = clock();
-	mult.ResultCalculation();
+	mult.resultCalculation();
 	auto finish = clock();
 	auto duration = (finish - start) / double(CLOCKS_PER_SEC);
 
@@ -84,9 +84,9 @@ void main()
 	std::ofstream ostrm(fileName, std::ios::out);
 
 	RandomGeneration::init();
-	Experiment(ostrm, 10);
-	Experiment(ostrm, 100);
+	experiment(ostrm, 10);
+	experiment(ostrm, 100);
 	for (int i = 1000; i <= 10000; i = i + 1000) {
-		Experiment(ostrm, i);
+		experiment(ostrm, i);
 	}
 }
