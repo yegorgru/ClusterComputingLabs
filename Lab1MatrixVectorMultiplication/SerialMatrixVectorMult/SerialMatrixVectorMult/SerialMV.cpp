@@ -19,7 +19,8 @@ namespace RandomGeneration {
 
 	template<int lowerBound, int upperBound>
 	double randDoubleValue() {
-		return lowerBound + rand() / double(upperBound - lowerBound);
+		double f = (double)rand() / RAND_MAX;
+		return lowerBound + f * (upperBound - lowerBound);
 	}
 };
 
