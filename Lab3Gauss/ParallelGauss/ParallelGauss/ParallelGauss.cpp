@@ -1,8 +1,10 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <conio.h>
-#include <time.h>
-#include <math.h>
+#include <ctime>
+#include <cmath>
+#include <optional>
+#include <vector>
+#include <fstream>
+#include <iostream>
+#include <string>
 #include <mpi.h>
 
 namespace RandomGeneration {
@@ -54,32 +56,21 @@ public:
 
     void ProcessInitialization(double*& pMatrix, double*& pVector,
         double*& pResult, double*& pProcRows, double*& pProcVector,
-        double*& pProcResult, int& Size, int& RowNum) {
+        double*& pProcResult, int& RowNum) {
 
         int RestRows; // Number of rows, that haven't been distributed yet
         int i;        // Loop variable
 
-        if (mMpiData.mProcRank == 0) {
-            do {
-                printf("\nEnter the size of the matrix and the vector: ");
-                scanf("%d", &Size);
-                if (Size < mMpiData.mProcNum) {
-                    printf("Size must be greater than number of processes! \n");
-                }
-            } while (Size < mMpiData.mProcNum);
-        }
-        MPI_Bcast(&Size, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-        RestRows = Size;
+        RestRows = mSize;
         for (i = 0; i < mMpiData.mProcRank; i++)
             RestRows = RestRows - RestRows / (mMpiData.mProcNum - i);
         RowNum = RestRows / (mMpiData.mProcNum - mMpiData.mProcRank);
 
-        pProcRows = new double[RowNum * Size];
+        pProcRows = new double[RowNum * mSize];
         pProcVector = new double[RowNum];
         pProcResult = new double[RowNum];
 
-        pParallelPivotPos = new int[Size];
+        pParallelPivotPos = new int[mSize];
         pProcPivotIter = new int[RowNum];
 
         pProcInd = new int[mMpiData.mProcNum];
@@ -89,11 +80,10 @@ public:
             pProcPivotIter[i] = -1;
 
         if (mMpiData.mProcRank == 0) {
-            pMatrix = new double[Size * Size];
-            pVector = new double[Size];
-            pResult = new double[Size];
-            // DummyDataInitialization (pMatrix, pVector, Size);
-            RandomDataInitialization(pMatrix, pVector, Size);
+            pMatrix = new double[mSize * mSize];
+            pVector = new double[mSize];
+            pResult = new double[mSize];
+            RandomDataInitialization(pMatrix, pVector, mSize);
         }
     }
 
@@ -151,31 +141,6 @@ public:
         MPI_Gatherv(pProcResult, pProcNum[mMpiData.mProcRank], MPI_DOUBLE, pResult,
             pProcNum, pProcInd, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-
-    // Function for formatted matrix output
-    void PrintMatrix(double* pMatrix, int RowCount, int ColCount) {
-        int i, j; // Loop variables
-        for (i = 0; i < RowCount; i++) {
-            for (j = 0; j < ColCount; j++)
-                printf("%7.4f ", pMatrix[i * ColCount + j]);
-            printf("\n");
-        }
-    }
-
-    // Function for formatted vector output
-    void PrintVector(double* pVector, int Size) {
-        int i;
-        for (i = 0; i < Size; i++)
-            printf("%7.4f ", pVector[i]);
-    }
-
-    // Function for formatted result vector output
-    void PrintResultVector(double* pResult, int Size) {
-        int i;
-        for (i = 0; i < Size; i++)
-            printf("%7.4f ", pResult[pParallelPivotPos[i]]);
-    }
-
 
     // Fuction for the column elimination
     void ParallelEliminateColumns(double* pProcRows, double* pProcVector, double* pPivotRow, int Size, int RowNum, int Iter) {
@@ -282,29 +247,6 @@ public:
         }
     }
 
-    void TestDistribution(double* pMatrix, double* pVector, double* pProcRows,
-        double* pProcVector, int Size, int RowNum) {
-
-        if (mMpiData.mProcRank == 0) {
-            printf("Initial Matrix: \n");
-            PrintMatrix(pMatrix, Size, Size);
-            printf("Initial Vector: \n");
-            PrintVector(pVector, Size);
-        }
-        MPI_Barrier(MPI_COMM_WORLD);
-        for (int i = 0; i < mMpiData.mProcNum; i++) {
-            if (mMpiData.mProcRank == i) {
-                printf("\nProcRank = %d \n", mMpiData.mProcRank);
-                printf(" Matrix Stripe:\n");
-                PrintMatrix(pProcRows, RowNum, Size);
-                printf(" Vector: \n");
-                PrintVector(pProcVector, RowNum);
-            }
-            MPI_Barrier(MPI_COMM_WORLD);
-        }
-    }
-
-
     // Function for the execution of the parallel Gauss algorithm
     void ParallelResultCalculation(double* pProcRows, double* pProcVector,
         double* pProcResult, int Size, int RowNum) {
@@ -380,48 +322,107 @@ public:
     int     RowNum;         // Number of  the matrix rows 
 };
 
-void main(int argc, char* argv[]) {
-    double start, finish, duration;
-    setvbuf(stdout, 0, _IONBF, 0);
+class Application {
+public:
+    Application(int argc, char* argv[]) {
+        RandomGeneration::init();
+        MPI_Init(&argc, &argv);
 
-    MPIData mpiData;
+        MPI_Comm_size(MPI_COMM_WORLD, &mMpiData.mProcNum);
+        MPI_Comm_rank(MPI_COMM_WORLD, &mMpiData.mProcRank);
 
-    MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpiData.mProcRank);
-    MPI_Comm_size(MPI_COMM_WORLD, &mpiData.mProcNum);
+        std::string fileName = "ParallelMV";
 
-    ParallelGauss gauss(mpiData, 10);
+#ifdef NDEBUG
+        fileName += "Release";
+#else
+        fileName += "Debug";
+#endif
 
-    if (mpiData.mProcRank == 0)
-        printf("Parallel Gauss algorithm for solving linear systems\n");
+        fileName += std::to_string(mMpiData.mProcNum) + ".txt";
 
-    // Memory allocation and data initialization
-    gauss.ProcessInitialization(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.pProcRows, gauss.pProcVector, gauss.pProcResult, gauss.mSize, gauss.RowNum);
-    // The execution of the parallel Gauss algorithm
-    start = MPI_Wtime();
-
-    gauss.DataDistribution(gauss.pMatrix, gauss.pProcRows, gauss.pVector, gauss.pProcVector, gauss.mSize, gauss.RowNum);
-
-    gauss.ParallelResultCalculation(gauss.pProcRows, gauss.pProcVector, gauss.pProcResult, gauss.mSize, gauss.RowNum);
-    gauss.TestDistribution(gauss.pMatrix, gauss.pVector, gauss.pProcRows, gauss.pProcVector, gauss.mSize, gauss.RowNum);
-
-    gauss.ResultCollection(gauss.pProcResult, gauss.pResult);
-
-    finish = MPI_Wtime();
-    duration = finish - start;
-
-    if (mpiData.mProcRank == 0) {
-        // Printing the result vector
-        printf("\n Result Vector: \n");
-        gauss.PrintResultVector(gauss.pResult, gauss.mSize);
+        if (mMpiData.mProcRank == 0) {
+            mOfstr = std::ofstream(fileName, std::ios::out);
+            *mOfstr << "Number of processes: " << mMpiData.mProcNum << std::endl;
+        }
     }
-    gauss.TestResult(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.mSize);
 
-    // Printing the time spent by Gauss algorithm
-    if (mpiData.mProcRank == 0)
-        printf("\n Time of execution: %f\n", duration);
+    ~Application() {
+        MPI_Finalize();
+    }
 
-    // Computational process termination
-    gauss.ProcessTermination(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.pProcRows, gauss.pProcVector, gauss.pProcResult);
-    MPI_Finalize();
+    void run() {
+        experiment(10);
+        experiment(100);
+        for (int i = 500; i <= 3000; i += 500) {
+            experiment(i);
+        }
+    }
+
+private:
+    void experiment(int size) {
+        ParallelGauss gauss(mMpiData, size);
+
+        //auto start = MPI_Wtime();
+        //auto start = clock();
+
+        double start, finish, duration;
+
+        // Memory allocation and data initialization
+        gauss.ProcessInitialization(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.pProcRows, gauss.pProcVector, gauss.pProcResult, gauss.RowNum);
+        // The execution of the parallel Gauss algorithm
+        start = MPI_Wtime();
+
+        gauss.DataDistribution(gauss.pMatrix, gauss.pProcRows, gauss.pVector, gauss.pProcVector, gauss.mSize, gauss.RowNum);
+
+        gauss.ParallelResultCalculation(gauss.pProcRows, gauss.pProcVector, gauss.pProcResult, gauss.mSize, gauss.RowNum);
+
+        gauss.ResultCollection(gauss.pProcResult, gauss.pResult);
+
+        finish = MPI_Wtime();
+        duration = finish - start;
+
+        gauss.TestResult(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.mSize);
+
+        // Printing the time spent by Gauss algorithm
+        if (mMpiData.mProcRank == 0)
+            printf("\n Time of execution: %f\n", duration);
+
+        // Computational process termination
+        gauss.ProcessTermination(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.pProcRows, gauss.pProcVector, gauss.pProcResult);
+
+        //auto finish = MPI_Wtime();
+        //auto finish = clock();
+
+        //auto duration = (finish - start) / double(CLOCKS_PER_SEC);
+
+        //if (mMpiData.mProcRank == 0) {
+        //    testResult(mult);
+        //    *mOfstr << "Size = " << size << ", Time = " << duration << std::endl;
+        //}
+    }
+
+    void testResult(const ParallelGauss& mult) {
+        //bool equal = true;
+        //auto serialRes = mult.serialResultCalculation();
+        //const auto& res = mult.getResult();
+        //for (int i = 0; i < serialRes.size(); i++) {
+        //    if (res[i] != serialRes[i]) {
+        //        equal = false;
+        //        break;
+        //    }
+        //}
+        //if (!equal) {
+        //    *mOfstr << "The results of serial and parallel algorithms are NOT identical. Check your code." << std::endl;
+        //}
+    }
+
+private:
+    MPIData mMpiData;
+    std::optional<std::ofstream> mOfstr;
+};
+
+void main(int argc, char* argv[]) {
+    Application app(argc, argv);
+    app.run();
 }
