@@ -34,6 +34,9 @@ struct MPIData {
 
 class ParallelGauss {
 public:
+    using DataStorage = std::vector<double>;
+    using RootDataStorage = std::optional<DataStorage>;
+public:
     ParallelGauss(MPIData mpiData, int size) :
         mMpiData(mpiData),
         mSize(size)
@@ -41,11 +44,9 @@ public:
     }
 
     void RandomDataInitialization(double* pMatrix, double* pVector) {
-        int i, j;  // Loop variables
-        srand(unsigned(clock()));
-        for (i = 0; i < mSize; i++) {
+        for (int i = 0; i < mSize; i++) {
             pVector[i] = rand() / double(1000);
-            for (j = 0; j < mSize; j++) {
+            for (int j = 0; j < mSize; j++) {
                 if (j <= i)
                     pMatrix[i * mSize + j] = rand() / double(1000);
                 else
@@ -54,7 +55,7 @@ public:
         }
     }
 
-    void ProcessInitialization(double*& pMatrix, double*& pVector, double*& pResult, double*& pProcRows, double*& pProcVector, double*& pProcResult, int& RowNum) {
+    void ProcessInitialization(double*& pMatrix, double*& pVector, double*& pResult, int& RowNum) {
 
         int RestRows; // Number of rows, that haven't been distributed yet
 
@@ -64,9 +65,9 @@ public:
         }
         RowNum = RestRows / (mMpiData.mProcNum - mMpiData.mProcRank);
 
-        pProcRows = new double[RowNum * mSize];
-        pProcVector = new double[RowNum];
-        pProcResult = new double[RowNum];
+        pProcRows.resize(RowNum * mSize);
+        pProcVector.resize(RowNum);
+        pProcResult.resize(RowNum);
 
         pParallelPivotPos = new int[mSize];
         pProcPivotIter = new int[RowNum];
@@ -86,7 +87,7 @@ public:
     }
 
     // Function for the data distribution among the processes
-    void DataDistribution(double* pMatrix, double* pProcRows, double* pVector, double* pProcVector, int RowNum) {
+    void DataDistribution(double* pMatrix, double* pVector, int RowNum) {
 
         int* pSendNum;     // Number of the elements sent to the process
         int* pSendInd;     // Index of the first data element sent 
@@ -111,8 +112,7 @@ public:
         }
 
         // Scatter the rows
-        MPI_Scatterv(pMatrix, pSendNum, pSendInd, MPI_DOUBLE, pProcRows,
-            pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(pMatrix, pSendNum, pSendInd, MPI_DOUBLE, pProcRows.data(), pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // Define the disposition of the matrix rows for current process
         RestRows = mSize;
@@ -124,8 +124,7 @@ public:
             pProcInd[i] = pProcInd[i - 1] + pProcNum[i - 1];
         }
 
-        MPI_Scatterv(pVector, pProcNum, pProcInd, MPI_DOUBLE, pProcVector,
-            pProcNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(pVector, pProcNum, pProcInd, MPI_DOUBLE, pProcVector.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // Free the memory
         delete[] pSendNum;
@@ -133,14 +132,13 @@ public:
     }
 
     // Function for gathering the result vector
-    void ResultCollection(double* pProcResult, double* pResult) {
+    void ResultCollection(double* pResult) {
         //Gather the whole result vector on every processor
-        MPI_Gatherv(pProcResult, pProcNum[mMpiData.mProcRank], MPI_DOUBLE, pResult,
-            pProcNum, pProcInd, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(pProcResult.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, pResult, pProcNum, pProcInd, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
     // Fuction for the column elimination
-    void ParallelEliminateColumns(double* pProcRows, double* pProcVector, double* pPivotRow, int RowNum, int Iter) {
+    void ParallelEliminateColumns(double* pPivotRow, int RowNum, int Iter) {
         double multiplier;
         for (int i = 0; i < RowNum; i++) {
             if (pProcPivotIter[i] == -1) {
@@ -155,7 +153,7 @@ public:
 
 
     // Function for the Gausian elimination
-    void ParallelGaussianElimination(double* pProcRows, double* pProcVector, int RowNum) {
+    void ParallelGaussianElimination(int RowNum) {
         double MaxValue;   // Value of the pivot element of th  process
         int    PivotPos;   // Position of the pivot row in the process stripe 
         // Structure for the pivot row selection
@@ -199,10 +197,10 @@ public:
             }
             MPI_Bcast(pPivotRow, mSize + 1, MPI_DOUBLE, Pivot.ProcRank, MPI_COMM_WORLD);
 
-            ParallelEliminateColumns(pProcRows, pProcVector, pPivotRow, RowNum, i);
+            ParallelEliminateColumns(pPivotRow, RowNum, i);
         }
     }
-    // Function for finding the pivot row of the back substitution
+
     void FindBackPivotRow(int RowIndex, int& IterProcRank, int& IterPivotPos) {
         for (int i = 0; i < mMpiData.mProcNum - 1; i++) {
             if ((pProcInd[i] <= RowIndex) && (RowIndex < pProcInd[i + 1]))
@@ -213,8 +211,7 @@ public:
         IterPivotPos = RowIndex - pProcInd[IterProcRank];
     }
 
-    // Function for the back substitution
-    void ParallelBackSubstitution(double* pProcRows, double* pProcVector, double* pProcResult, int RowNum) {
+    void ParallelBackSubstitution(int RowNum) {
         int IterProcRank;    // Rank of the process with the current pivot row
         int IterPivotPos;    // Position of the pivot row of the process
         double IterResult;   // Calculated value of the current unknown
@@ -244,21 +241,18 @@ public:
     }
 
     // Function for the execution of the parallel Gauss algorithm
-    void ParallelResultCalculation(double* pProcRows, double* pProcVector, double* pProcResult, int RowNum) {
-        ParallelGaussianElimination(pProcRows, pProcVector, RowNum);
-        ParallelBackSubstitution(pProcRows, pProcVector, pProcResult, RowNum);
+    void ParallelResultCalculation(int RowNum) {
+        ParallelGaussianElimination(RowNum);
+        ParallelBackSubstitution(RowNum);
     }
 
     // Function for computational process termination
-    void ProcessTermination(double* pMatrix, double* pVector, double* pResult, double* pProcRows, double* pProcVector, double* pProcResult) {
+    void ProcessTermination(double* pMatrix, double* pVector, double* pResult) {
         if (mMpiData.mProcRank == 0) {
             delete[] pMatrix;
             delete[] pVector;
             delete[] pResult;
         }
-        delete[] pProcRows;
-        delete[] pProcVector;
-        delete[] pProcResult;
 
         delete[] pParallelPivotPos;
         delete[] pProcPivotIter;
@@ -310,9 +304,10 @@ public:
     double* pMatrix;        // Matrix of the linear system
     double* pVector;        // Right parts of the linear system
     double* pResult;        // Result vector
-    double* pProcRows;      // Rows of the matrix A
-    double* pProcVector;    // Block of the vector b
-    double* pProcResult;    // Block of the vector x
+    DataStorage pProcRows;      // Rows of the matrix A
+    DataStorage pProcVector;    // Block of the vector b
+    DataStorage pProcResult;    // Block of the vector x
+
     int     RowNum;         // Number of  the matrix rows 
 };
 
@@ -348,9 +343,9 @@ public:
     void run() {
         experiment(10);
         experiment(100);
-        for (int i = 500; i <= 3000; i += 500) {
-            experiment(i);
-        }
+        //for (int i = 500; i <= 3000; i += 500) {
+        //    experiment(i);
+        //}
     }
 
 private:
@@ -363,15 +358,15 @@ private:
         double start, finish, duration;
 
         // Memory allocation and data initialization
-        gauss.ProcessInitialization(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.pProcRows, gauss.pProcVector, gauss.pProcResult, gauss.RowNum);
+        gauss.ProcessInitialization(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.RowNum);
         // The execution of the parallel Gauss algorithm
         start = MPI_Wtime();
 
-        gauss.DataDistribution(gauss.pMatrix, gauss.pProcRows, gauss.pVector, gauss.pProcVector, gauss.RowNum);
+        gauss.DataDistribution(gauss.pMatrix, gauss.pVector, gauss.RowNum);
 
-        gauss.ParallelResultCalculation(gauss.pProcRows, gauss.pProcVector, gauss.pProcResult, gauss.RowNum);
+        gauss.ParallelResultCalculation(gauss.RowNum);
 
-        gauss.ResultCollection(gauss.pProcResult, gauss.pResult);
+        gauss.ResultCollection(gauss.pResult);
 
         finish = MPI_Wtime();
         duration = finish - start;
@@ -383,7 +378,7 @@ private:
             printf("\n Time of execution: %f\n", duration);
 
         // Computational process termination
-        gauss.ProcessTermination(gauss.pMatrix, gauss.pVector, gauss.pResult, gauss.pProcRows, gauss.pProcVector, gauss.pProcResult);
+        gauss.ProcessTermination(gauss.pMatrix, gauss.pVector, gauss.pResult);
 
         //auto finish = MPI_Wtime();
         //auto finish = clock();
