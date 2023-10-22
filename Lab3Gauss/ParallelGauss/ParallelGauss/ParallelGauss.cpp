@@ -1,10 +1,9 @@
 #include <ctime>
-#include <cmath>
 #include <optional>
 #include <vector>
 #include <fstream>
-#include <iostream>
 #include <string>
+#include <utility>
 #include <mpi.h>
 
 namespace RandomGeneration {
@@ -83,25 +82,23 @@ public:
     }
 
     void dataDistribution() {
-        HelperStorage pSendNum(mMpiData.mProcNum);
-        HelperStorage pSendInd(mMpiData.mProcNum);
+        HelperStorage sendNum(mMpiData.mProcNum);
+        HelperStorage sendInd(mMpiData.mProcNum);
 
         int restRows = mSize;
 
         int rowNum = (mSize / mMpiData.mProcNum);
-        pSendNum[0] = rowNum * mSize;
-        pSendInd[0] = 0;
+        sendNum[0] = rowNum * mSize;
+        sendInd[0] = 0;
         for (int i = 1; i < mMpiData.mProcNum; i++) {
             restRows -= rowNum;
             rowNum = restRows / (mMpiData.mProcNum - i);
-            pSendNum[i] = rowNum * mSize;
-            pSendInd[i] = pSendInd[i - 1] + pSendNum[i - 1];
+            sendNum[i] = rowNum * mSize;
+            sendInd[i] = sendInd[i - 1] + sendNum[i - 1];
         }
 
-        // Scatter the rows
-        MPI_Scatterv(mMatrix ? mMatrix->data() : nullptr, pSendNum.data(), pSendInd.data(), MPI_DOUBLE, mProcRows.data(), pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(mMatrix ? mMatrix->data() : nullptr, sendNum.data(), sendInd.data(), MPI_DOUBLE, mProcRows.data(), sendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-        // Define the disposition of the matrix rows for current process
         restRows = mSize;
         mProcInd[0] = 0;
         mProcNum[0] = mSize / mMpiData.mProcNum;
@@ -134,85 +131,80 @@ private:
     }
 
     void parallelGaussianElimination() {
-        double MaxValue;
-        int    PivotPos;
-        struct { double MaxValue; int ProcRank; } ProcPivot, Pivot;
-
-        DataStorage pPivotRow(mSize + 1);
+        DataStorage pivotRow(mSize + 1);
+        PivotProcessInfo procPivot;
+        PivotProcessInfo pivot;
 
         for (int i = 0; i < mSize; i++) {
-            double MaxValue = 0;
+            int pivotPos = 0;
+            double maxValue = 0;
             for (int j = 0; j < mRowNum; j++) {
-                if ((mProcPivotIter[j] == -1) && (MaxValue < fabs(mProcRows[j * mSize + i]))) {
-                    MaxValue = fabs(mProcRows[j * mSize + i]);
-                    PivotPos = j;
+                if (mProcPivotIter[j] == -1 && maxValue < fabs(mProcRows[j * mSize + i])) {
+                    maxValue = fabs(mProcRows[j * mSize + i]);
+                    pivotPos = j;
                 }
             }
-            ProcPivot.MaxValue = MaxValue;
-            ProcPivot.ProcRank = mMpiData.mProcRank;
+            procPivot.mMaxValue = maxValue;
+            procPivot.mProcRank = mMpiData.mProcRank;
 
-            MPI_Allreduce(&ProcPivot, &Pivot, 1, MPI_DOUBLE_INT, MPI_MAXLOC,
-                MPI_COMM_WORLD);
+            MPI_Allreduce(&procPivot, &pivot, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 
-            if (mMpiData.mProcRank == Pivot.ProcRank) {
-                mProcPivotIter[PivotPos] = i;
-                mParallelPivotPos[i] = mProcInd[mMpiData.mProcRank] + PivotPos;
+            if (mMpiData.mProcRank == pivot.mProcRank) {
+                mProcPivotIter[pivotPos] = i;
+                mParallelPivotPos[i] = mProcInd[mMpiData.mProcRank] + pivotPos;
             }
-            MPI_Bcast(&mParallelPivotPos[i], 1, MPI_INT, Pivot.ProcRank, MPI_COMM_WORLD);
+            MPI_Bcast(&mParallelPivotPos[i], 1, MPI_INT, pivot.mProcRank, MPI_COMM_WORLD);
 
-            if (mMpiData.mProcRank == Pivot.ProcRank) {
+            if (mMpiData.mProcRank == pivot.mProcRank) {
                 for (int j = 0; j < mSize; j++) {
-                    pPivotRow[j] = mProcRows[PivotPos * mSize + j];
+                    pivotRow[j] = mProcRows[pivotPos * mSize + j];
                 }
-                pPivotRow[mSize] = mProcVector[PivotPos];
+                pivotRow[mSize] = mProcVector[pivotPos];
             }
-            MPI_Bcast(pPivotRow.data(), mSize + 1, MPI_DOUBLE, Pivot.ProcRank, MPI_COMM_WORLD);
+            MPI_Bcast(pivotRow.data(), mSize + 1, MPI_DOUBLE, pivot.mProcRank, MPI_COMM_WORLD);
 
-            parallelEliminateColumns(pPivotRow, i);
+            parallelEliminateColumns(pivotRow, i);
         }
     }
 
     void parallelBackSubstitution() {
-        int IterProcRank;
-        int IterPivotPos;
-        double IterResult;
-        double val;
-
         for (int i = mSize - 1; i >= 0; i--) {
-            findBackPivotRow(mParallelPivotPos[i], IterProcRank, IterPivotPos);
-
-            if (mMpiData.mProcRank == IterProcRank) {
-                IterResult = mProcVector[IterPivotPos] / mProcRows[IterPivotPos * mSize + i];
-                mProcResult[IterPivotPos] = IterResult;
+            const auto [iterProcRank, iterPivotPos] = findBackPivotRow(mParallelPivotPos[i]);
+            double iterResult = 0;
+            if (mMpiData.mProcRank == iterProcRank) {
+                iterResult = mProcVector[iterPivotPos] / mProcRows[iterPivotPos * mSize + i];
+                mProcResult[iterPivotPos] = iterResult;
             }
 
-            MPI_Bcast(&IterResult, 1, MPI_DOUBLE, IterProcRank, MPI_COMM_WORLD);
+            MPI_Bcast(&iterResult, 1, MPI_DOUBLE, iterProcRank, MPI_COMM_WORLD);
 
-            for (int j = 0; j < mRowNum; j++)
+            for (int j = 0; j < mRowNum; j++) {
                 if (mProcPivotIter[j] < i) {
-                    val = mProcRows[j * mSize + i] * IterResult;
+                    auto val = mProcRows[j * mSize + i] * iterResult;
                     mProcVector[j] = mProcVector[j] - val;
                 }
+            }
         }
     }
 
-    void findBackPivotRow(int RowIndex, int& IterProcRank, int& IterPivotPos) {
+    std::pair<int, int> findBackPivotRow(int rowIndex) {
+        int iterProcRank = 0;
         for (int i = 0; i < mMpiData.mProcNum - 1; i++) {
-            if ((mProcInd[i] <= RowIndex) && (RowIndex < mProcInd[i + 1])) {
-                IterProcRank = i;
+            if ((mProcInd[i] <= rowIndex) && (rowIndex < mProcInd[i + 1])) {
+                iterProcRank = i;
             }
         }
-        if (RowIndex >= mProcInd[mMpiData.mProcNum - 1]) {
-            IterProcRank = mMpiData.mProcNum - 1;
+        if (rowIndex >= mProcInd[mMpiData.mProcNum - 1]) {
+            iterProcRank = mMpiData.mProcNum - 1;
         }
-        IterPivotPos = RowIndex - mProcInd[IterProcRank];
+        int iterPivotPos = rowIndex - mProcInd[iterProcRank];
+        return std::make_pair(iterProcRank, iterPivotPos);
     }
 
     void parallelEliminateColumns(const DataStorage& pPivotRow, int Iter) {
-        double multiplier;
         for (int i = 0; i < mRowNum; i++) {
             if (mProcPivotIter[i] == -1) {
-                multiplier = mProcRows[i * mSize + Iter] / pPivotRow[Iter];
+                double multiplier = mProcRows[i * mSize + Iter] / pPivotRow[Iter];
                 for (int j = Iter; j < mSize; j++) {
                     mProcRows[i * mSize + j] -= pPivotRow[j] * multiplier;
                 }
@@ -220,9 +212,15 @@ private:
             }
         }
     }
-public:
+private:
+    struct PivotProcessInfo {
+        double mMaxValue;
+        int mProcRank;
+    };
+private:
     MPIData mMpiData;
     int mSize;
+    int mRowNum;
 
     HelperStorage mParallelPivotPos;
     HelperStorage mProcPivotIter;
@@ -235,8 +233,6 @@ public:
     DataStorage mProcRows;
     DataStorage mProcVector;
     DataStorage mProcResult;
-
-    int     mRowNum;
 };
 
 class Application {
@@ -248,7 +244,7 @@ public:
         MPI_Comm_size(MPI_COMM_WORLD, &mMpiData.mProcNum);
         MPI_Comm_rank(MPI_COMM_WORLD, &mMpiData.mProcRank);
 
-        std::string fileName = "ParallelMV";
+        std::string fileName = "ParallelGauss";
 
 #ifdef NDEBUG
         fileName += "Release";
@@ -271,9 +267,9 @@ public:
     void run() {
         experiment(10);
         experiment(100);
-        /*for (int i = 500; i <= 3000; i += 500) {
+        for (int i = 500; i <= 3000; i += 500) {
             experiment(i);
-        }*/
+        }
     }
 
 private:
