@@ -46,36 +46,43 @@ public:
         for (int i = 0; i < mMpiData.mProcRank; i++) {
             RestRows = RestRows - RestRows / (mMpiData.mProcNum - i);
         }
-        RowNum = RestRows / (mMpiData.mProcNum - mMpiData.mProcRank);
+        mRowNum = RestRows / (mMpiData.mProcNum - mMpiData.mProcRank);
 
-        pProcRows.resize(RowNum * mSize);
-        pProcVector.resize(RowNum);
-        pProcResult.resize(RowNum);
+        mProcRows.resize(mRowNum * mSize);
+        mProcVector.resize(mRowNum);
+        mProcResult.resize(mRowNum);
 
-        pParallelPivotPos.resize(mSize);
-        pProcPivotIter.resize(RowNum, -1);
+        mParallelPivotPos.resize(mSize);
+        mProcPivotIter.resize(mRowNum, -1);
 
-        pProcInd.resize(mMpiData.mProcNum);
-        pProcNum.resize(mMpiData.mProcNum);
+        mProcInd.resize(mMpiData.mProcNum);
+        mProcNum.resize(mMpiData.mProcNum);
 
         if (mMpiData.mProcRank == 0) {
-            pMatrix = DataStorage(mSize * mSize);
-            pVector = DataStorage(mSize);
-            pResult = DataStorage(mSize);
-            RandomDataInitialization();
+            mMatrix = DataStorage(mSize * mSize);
+            mVector = DataStorage(mSize);
+            mResult = DataStorage(mSize);
+            randomDataInitialization();
         }
     }
 
-    void RandomDataInitialization() {
-        for (int i = 0; i < mSize; i++) {
-            (*pVector)[i] = rand() / double(1000);
-            for (int j = 0; j < mSize; j++) {
-                (*pMatrix)[i * mSize + j] = j <= i ? RandomGeneration::randDoubleValue<-1000, 1000>() : 0;
-            }
-        }
+    const RootDataStorage& getMatrix() const {
+        return mMatrix;
     }
 
-    void DataDistribution() {
+    const RootDataStorage& getVector() const {
+        return mVector;
+    }
+
+    const RootDataStorage& getResult() const {
+        return mResult;
+    }
+
+    const HelperStorage& getParallelPivotPos() const {
+        return mParallelPivotPos;
+    }
+
+    void dataDistribution() {
         HelperStorage pSendNum(mMpiData.mProcNum);
         HelperStorage pSendInd(mMpiData.mProcNum);
 
@@ -92,39 +99,41 @@ public:
         }
 
         // Scatter the rows
-        MPI_Scatterv(pMatrix ? pMatrix->data() : nullptr, pSendNum.data(), pSendInd.data(), MPI_DOUBLE, pProcRows.data(), pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(mMatrix ? mMatrix->data() : nullptr, pSendNum.data(), pSendInd.data(), MPI_DOUBLE, mProcRows.data(), pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // Define the disposition of the matrix rows for current process
         restRows = mSize;
-        pProcInd[0] = 0;
-        pProcNum[0] = mSize / mMpiData.mProcNum;
+        mProcInd[0] = 0;
+        mProcNum[0] = mSize / mMpiData.mProcNum;
         for (int i = 1; i < mMpiData.mProcNum; i++) {
-            restRows -= pProcNum[i - 1];
-            pProcNum[i] = restRows / (mMpiData.mProcNum - i);
-            pProcInd[i] = pProcInd[i - 1] + pProcNum[i - 1];
+            restRows -= mProcNum[i - 1];
+            mProcNum[i] = restRows / (mMpiData.mProcNum - i);
+            mProcInd[i] = mProcInd[i - 1] + mProcNum[i - 1];
         }
 
-        MPI_Scatterv(pVector ? pVector->data() : nullptr, pProcNum.data(), pProcInd.data(), MPI_DOUBLE, pProcVector.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(mVector ? mVector->data() : nullptr, mProcNum.data(), mProcInd.data(), MPI_DOUBLE, mProcVector.data(), mProcNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    void ResultCollection() {
-        MPI_Gatherv(pProcResult.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, pResult ? pResult->data() : nullptr, pProcNum.data(), pProcInd.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    void resultCollection() {
+        MPI_Gatherv(mProcResult.data(), mProcNum[mMpiData.mProcRank], MPI_DOUBLE, mResult ? mResult->data() : nullptr, mProcNum.data(), mProcInd.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    void ParallelEliminateColumns(const DataStorage& pPivotRow, int Iter) {
-        double multiplier;
-        for (int i = 0; i < RowNum; i++) {
-            if (pProcPivotIter[i] == -1) {
-                multiplier = pProcRows[i * mSize + Iter] / pPivotRow[Iter];
-                for (int j = Iter; j < mSize; j++) {
-                    pProcRows[i * mSize + j] -= pPivotRow[j] * multiplier;
-                }
-                pProcVector[i] -= pPivotRow[mSize] * multiplier;
+    void parallelResultCalculation() {
+        parallelGaussianElimination();
+        parallelBackSubstitution();
+    }
+
+private:
+    void randomDataInitialization() {
+        for (int i = 0; i < mSize; i++) {
+            (*mVector)[i] = rand() / double(1000);
+            for (int j = 0; j < mSize; j++) {
+                (*mMatrix)[i * mSize + j] = j <= i ? RandomGeneration::randDoubleValue<-1000, 1000>() : 0;
             }
         }
     }
 
-    void ParallelGaussianElimination() {
+    void parallelGaussianElimination() {
         double MaxValue;
         int    PivotPos;
         struct { double MaxValue; int ProcRank; } ProcPivot, Pivot;
@@ -133,9 +142,9 @@ public:
 
         for (int i = 0; i < mSize; i++) {
             double MaxValue = 0;
-            for (int j = 0; j < RowNum; j++) {
-                if ((pProcPivotIter[j] == -1) && (MaxValue < fabs(pProcRows[j * mSize + i]))) {
-                    MaxValue = fabs(pProcRows[j * mSize + i]);
+            for (int j = 0; j < mRowNum; j++) {
+                if ((mProcPivotIter[j] == -1) && (MaxValue < fabs(mProcRows[j * mSize + i]))) {
+                    MaxValue = fabs(mProcRows[j * mSize + i]);
                     PivotPos = j;
                 }
             }
@@ -146,106 +155,88 @@ public:
                 MPI_COMM_WORLD);
 
             if (mMpiData.mProcRank == Pivot.ProcRank) {
-                pProcPivotIter[PivotPos] = i;
-                pParallelPivotPos[i] = pProcInd[mMpiData.mProcRank] + PivotPos;
+                mProcPivotIter[PivotPos] = i;
+                mParallelPivotPos[i] = mProcInd[mMpiData.mProcRank] + PivotPos;
             }
-            MPI_Bcast(&pParallelPivotPos[i], 1, MPI_INT, Pivot.ProcRank, MPI_COMM_WORLD);
+            MPI_Bcast(&mParallelPivotPos[i], 1, MPI_INT, Pivot.ProcRank, MPI_COMM_WORLD);
 
             if (mMpiData.mProcRank == Pivot.ProcRank) {
                 for (int j = 0; j < mSize; j++) {
-                    pPivotRow[j] = pProcRows[PivotPos * mSize + j];
+                    pPivotRow[j] = mProcRows[PivotPos * mSize + j];
                 }
-                pPivotRow[mSize] = pProcVector[PivotPos];
+                pPivotRow[mSize] = mProcVector[PivotPos];
             }
             MPI_Bcast(pPivotRow.data(), mSize + 1, MPI_DOUBLE, Pivot.ProcRank, MPI_COMM_WORLD);
 
-            ParallelEliminateColumns(pPivotRow, i);
+            parallelEliminateColumns(pPivotRow, i);
         }
     }
 
-    void FindBackPivotRow(int RowIndex, int& IterProcRank, int& IterPivotPos) {
-        for (int i = 0; i < mMpiData.mProcNum - 1; i++) {
-            if ((pProcInd[i] <= RowIndex) && (RowIndex < pProcInd[i + 1])) {
-                IterProcRank = i;
-            }
-        }
-        if (RowIndex >= pProcInd[mMpiData.mProcNum - 1]) {
-            IterProcRank = mMpiData.mProcNum - 1;
-        }
-        IterPivotPos = RowIndex - pProcInd[IterProcRank];
-    }
-
-    void ParallelBackSubstitution() {
+    void parallelBackSubstitution() {
         int IterProcRank;
         int IterPivotPos;
         double IterResult;
         double val;
 
         for (int i = mSize - 1; i >= 0; i--) {
-            FindBackPivotRow(pParallelPivotPos[i], IterProcRank, IterPivotPos);
+            findBackPivotRow(mParallelPivotPos[i], IterProcRank, IterPivotPos);
 
             if (mMpiData.mProcRank == IterProcRank) {
-                IterResult = pProcVector[IterPivotPos] / pProcRows[IterPivotPos * mSize + i];
-                pProcResult[IterPivotPos] = IterResult;
+                IterResult = mProcVector[IterPivotPos] / mProcRows[IterPivotPos * mSize + i];
+                mProcResult[IterPivotPos] = IterResult;
             }
 
             MPI_Bcast(&IterResult, 1, MPI_DOUBLE, IterProcRank, MPI_COMM_WORLD);
 
-            for (int j = 0; j < RowNum; j++)
-                if (pProcPivotIter[j] < i) {
-                    val = pProcRows[j * mSize + i] * IterResult;
-                    pProcVector[j] = pProcVector[j] - val;
+            for (int j = 0; j < mRowNum; j++)
+                if (mProcPivotIter[j] < i) {
+                    val = mProcRows[j * mSize + i] * IterResult;
+                    mProcVector[j] = mProcVector[j] - val;
                 }
         }
     }
 
-    void ParallelResultCalculation() {
-        ParallelGaussianElimination();
-        ParallelBackSubstitution();
+    void findBackPivotRow(int RowIndex, int& IterProcRank, int& IterPivotPos) {
+        for (int i = 0; i < mMpiData.mProcNum - 1; i++) {
+            if ((mProcInd[i] <= RowIndex) && (RowIndex < mProcInd[i + 1])) {
+                IterProcRank = i;
+            }
+        }
+        if (RowIndex >= mProcInd[mMpiData.mProcNum - 1]) {
+            IterProcRank = mMpiData.mProcNum - 1;
+        }
+        IterPivotPos = RowIndex - mProcInd[IterProcRank];
     }
 
-    // Function for testing the result
-    void TestResult() {
-        int equal = 0;
-        double Accuracy = 1.e-6; // Comparison accuracy
-
-        if (mMpiData.mProcRank == 0) {
-            DataStorage pRightPartVector(mSize);
-            for (int i = 0; i < mSize; i++) {
-                pRightPartVector[i] = 0;
-                for (int j = 0; j < mSize; j++) {
-                    pRightPartVector[i] += (*pMatrix)[i * mSize + j] * (*pResult)[pParallelPivotPos[j]];
+    void parallelEliminateColumns(const DataStorage& pPivotRow, int Iter) {
+        double multiplier;
+        for (int i = 0; i < mRowNum; i++) {
+            if (mProcPivotIter[i] == -1) {
+                multiplier = mProcRows[i * mSize + Iter] / pPivotRow[Iter];
+                for (int j = Iter; j < mSize; j++) {
+                    mProcRows[i * mSize + j] -= pPivotRow[j] * multiplier;
                 }
+                mProcVector[i] -= pPivotRow[mSize] * multiplier;
             }
-
-            for (int i = 0; i < mSize; i++) {
-                if (fabs(pRightPartVector[i] - (*pVector)[i]) > Accuracy) {
-                    equal = 1;
-                }
-            }
-            if (equal == 1)
-                printf("The result of the parallel Gauss algorithm is NOT correct. Check your code.");
-            else
-                printf("The result of the parallel Gauss algorithm is correct.");
         }
     }
 public:
     MPIData mMpiData;
     int mSize;
 
-    HelperStorage pParallelPivotPos;
-    HelperStorage pProcPivotIter;
-    HelperStorage pProcInd;
-    HelperStorage pProcNum;
+    HelperStorage mParallelPivotPos;
+    HelperStorage mProcPivotIter;
+    HelperStorage mProcInd;
+    HelperStorage mProcNum;
 
-    RootDataStorage pMatrix;
-    RootDataStorage pVector;
-    RootDataStorage pResult;
-    DataStorage pProcRows;
-    DataStorage pProcVector;
-    DataStorage pProcResult;
+    RootDataStorage mMatrix;
+    RootDataStorage mVector;
+    RootDataStorage mResult;
+    DataStorage mProcRows;
+    DataStorage mProcVector;
+    DataStorage mProcResult;
 
-    int     RowNum;
+    int     mRowNum;
 };
 
 class Application {
@@ -280,62 +271,58 @@ public:
     void run() {
         experiment(10);
         experiment(100);
-        //for (int i = 500; i <= 3000; i += 500) {
-        //    experiment(i);
-        //}
+        /*for (int i = 500; i <= 3000; i += 500) {
+            experiment(i);
+        }*/
     }
 
 private:
     void experiment(int size) {
         ParallelGauss gauss(mMpiData, size);
 
-        //auto start = MPI_Wtime();
-        //auto start = clock();
+        auto start = clock();
 
-        double start, finish, duration;
+        gauss.dataDistribution();
 
-        // The execution of the parallel Gauss algorithm
-        start = MPI_Wtime();
+        gauss.parallelResultCalculation();
 
-        gauss.DataDistribution();
+        gauss.resultCollection();
 
-        gauss.ParallelResultCalculation();
+        auto finish = clock();
+        auto duration = (finish - start) / double(CLOCKS_PER_SEC);
 
-        gauss.ResultCollection();
-
-        finish = MPI_Wtime();
-        duration = finish - start;
-
-        gauss.TestResult();
-
-        // Printing the time spent by Gauss algorithm
-        if (mMpiData.mProcRank == 0)
-            printf("\n Time of execution: %f\n", duration);
-
-        //auto finish = MPI_Wtime();
-        //auto finish = clock();
-
-        //auto duration = (finish - start) / double(CLOCKS_PER_SEC);
-
-        //if (mMpiData.mProcRank == 0) {
-        //    testResult(mult);
-        //    *mOfstr << "Size = " << size << ", Time = " << duration << std::endl;
-        //}
+        if (mMpiData.mProcRank == 0) {
+            testResult(gauss, size);
+            *mOfstr << "Size = " << size << ", Time = " << duration << std::endl;
+        }
     }
 
-    void testResult(const ParallelGauss& mult) {
-        //bool equal = true;
-        //auto serialRes = mult.serialResultCalculation();
-        //const auto& res = mult.getResult();
-        //for (int i = 0; i < serialRes.size(); i++) {
-        //    if (res[i] != serialRes[i]) {
-        //        equal = false;
-        //        break;
-        //    }
-        //}
-        //if (!equal) {
-        //    *mOfstr << "The results of serial and parallel algorithms are NOT identical. Check your code." << std::endl;
-        //}
+    void testResult(const ParallelGauss& gauss, int size) {
+        bool equal = true;
+        double accuracy = 1.e-6;
+
+        const auto& matrix = gauss.getMatrix();
+        const auto& vec = gauss.getVector();
+        const auto& result = gauss.getResult();
+        const auto& parallelPivotPos = gauss.getParallelPivotPos();
+
+        ParallelGauss::DataStorage rightPartVector(size);
+        for (int i = 0; i < size; i++) {
+            rightPartVector[i] = 0;
+            for (int j = 0; j < size; j++) {
+                rightPartVector[i] += (*matrix)[i * size + j] * (*result)[parallelPivotPos[j]];
+            }
+        }
+
+        for (int i = 0; i < size; i++) {
+            if (fabs(rightPartVector[i] - (*vec)[i]) > accuracy) {
+                equal = false;
+                break;
+            }
+        }
+        if (!equal) {
+            *mOfstr << "The results of serial and parallel algorithms are NOT identical. Check your code." << std::endl;
+        }
     }
 
 private:
