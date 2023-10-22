@@ -34,6 +34,7 @@ struct MPIData {
 
 class ParallelGauss {
 public:
+    using HelperStorage = std::vector<int>;
     using DataStorage = std::vector<double>;
     using RootDataStorage = std::optional<DataStorage>;
 public:
@@ -69,11 +70,11 @@ public:
         pProcVector.resize(RowNum);
         pProcResult.resize(RowNum);
 
-        pParallelPivotPos = new int[mSize];
-        pProcPivotIter = new int[RowNum];
+        pParallelPivotPos.resize(mSize);
+        pProcPivotIter.resize(RowNum);
 
-        pProcInd = new int[mMpiData.mProcNum];
-        pProcNum = new int[mMpiData.mProcNum];
+        pProcInd.resize(mMpiData.mProcNum);
+        pProcNum.resize(mMpiData.mProcNum);
 
         for (int i = 0; i < RowNum; i++)
             pProcPivotIter[i] = -1;
@@ -86,25 +87,16 @@ public:
         }
     }
 
-    // Function for the data distribution among the processes
     void DataDistribution(double* pMatrix, double* pVector, int RowNum) {
 
-        int* pSendNum;     // Number of the elements sent to the process
-        int* pSendInd;     // Index of the first data element sent 
-        // to the process
-        int RestRows = mSize; // Number of rows, that have not been 
-        // distributed yet
-        int i;             // Loop variable
+        HelperStorage pSendNum(mMpiData.mProcNum);
+        HelperStorage pSendInd(mMpiData.mProcNum);
+        int RestRows = mSize;
 
-        // Alloc memory for temporary objects
-        pSendInd = new int[mMpiData.mProcNum];
-        pSendNum = new int[mMpiData.mProcNum];
-
-        // Define the disposition of the matrix rows for the current process
         RowNum = (mSize / mMpiData.mProcNum);
         pSendNum[0] = RowNum * mSize;
         pSendInd[0] = 0;
-        for (i = 1; i < mMpiData.mProcNum; i++) {
+        for (int i = 1; i < mMpiData.mProcNum; i++) {
             RestRows -= RowNum;
             RowNum = RestRows / (mMpiData.mProcNum - i);
             pSendNum[i] = RowNum * mSize;
@@ -112,33 +104,26 @@ public:
         }
 
         // Scatter the rows
-        MPI_Scatterv(pMatrix, pSendNum, pSendInd, MPI_DOUBLE, pProcRows.data(), pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(pMatrix, pSendNum.data(), pSendInd.data(), MPI_DOUBLE, pProcRows.data(), pSendNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // Define the disposition of the matrix rows for current process
         RestRows = mSize;
         pProcInd[0] = 0;
         pProcNum[0] = mSize / mMpiData.mProcNum;
-        for (i = 1; i < mMpiData.mProcNum; i++) {
+        for (int i = 1; i < mMpiData.mProcNum; i++) {
             RestRows -= pProcNum[i - 1];
             pProcNum[i] = RestRows / (mMpiData.mProcNum - i);
             pProcInd[i] = pProcInd[i - 1] + pProcNum[i - 1];
         }
 
-        MPI_Scatterv(pVector, pProcNum, pProcInd, MPI_DOUBLE, pProcVector.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        // Free the memory
-        delete[] pSendNum;
-        delete[] pSendInd;
+        MPI_Scatterv(pVector, pProcNum.data(), pProcInd.data(), MPI_DOUBLE, pProcVector.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    // Function for gathering the result vector
     void ResultCollection(double* pResult) {
-        //Gather the whole result vector on every processor
-        MPI_Gatherv(pProcResult.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, pResult, pProcNum, pProcInd, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(pProcResult.data(), pProcNum[mMpiData.mProcRank], MPI_DOUBLE, pResult, pProcNum.data(), pProcInd.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    // Fuction for the column elimination
-    void ParallelEliminateColumns(double* pPivotRow, int RowNum, int Iter) {
+    void ParallelEliminateColumns(const DataStorage& pPivotRow, int RowNum, int Iter) {
         double multiplier;
         for (int i = 0; i < RowNum; i++) {
             if (pProcPivotIter[i] == -1) {
@@ -161,7 +146,7 @@ public:
 
         // pPivotRow is used for storing the pivot row and the corresponding 
         // element of the vector b
-        double* pPivotRow = new double[mSize + 1];
+        DataStorage pPivotRow(mSize + 1);
 
         // The iterations of the Gaussian elimination stage
         for (int i = 0; i < mSize; i++) {
@@ -195,7 +180,7 @@ public:
                 }
                 pPivotRow[mSize] = pProcVector[PivotPos];
             }
-            MPI_Bcast(pPivotRow, mSize + 1, MPI_DOUBLE, Pivot.ProcRank, MPI_COMM_WORLD);
+            MPI_Bcast(pPivotRow.data(), mSize + 1, MPI_DOUBLE, Pivot.ProcRank, MPI_COMM_WORLD);
 
             ParallelEliminateColumns(pPivotRow, RowNum, i);
         }
@@ -203,11 +188,13 @@ public:
 
     void FindBackPivotRow(int RowIndex, int& IterProcRank, int& IterPivotPos) {
         for (int i = 0; i < mMpiData.mProcNum - 1; i++) {
-            if ((pProcInd[i] <= RowIndex) && (RowIndex < pProcInd[i + 1]))
+            if ((pProcInd[i] <= RowIndex) && (RowIndex < pProcInd[i + 1])) {
                 IterProcRank = i;
+            }
         }
-        if (RowIndex >= pProcInd[mMpiData.mProcNum - 1])
+        if (RowIndex >= pProcInd[mMpiData.mProcNum - 1]) {
             IterProcRank = mMpiData.mProcNum - 1;
+        }
         IterPivotPos = RowIndex - pProcInd[IterProcRank];
     }
 
@@ -253,12 +240,6 @@ public:
             delete[] pVector;
             delete[] pResult;
         }
-
-        delete[] pParallelPivotPos;
-        delete[] pProcPivotIter;
-
-        delete[] pProcInd;
-        delete[] pProcNum;
     }
 
 
@@ -296,10 +277,10 @@ public:
     MPIData mMpiData;
     int mSize;
 
-    int* pParallelPivotPos;
-    int* pProcPivotIter;
-    int* pProcInd;
-    int* pProcNum;
+    HelperStorage pParallelPivotPos;
+    HelperStorage pProcPivotIter;
+    HelperStorage pProcInd;
+    HelperStorage pProcNum;
 
     double* pMatrix;        // Matrix of the linear system
     double* pVector;        // Right parts of the linear system
