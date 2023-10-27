@@ -172,9 +172,9 @@ public:
 		}
 	}
 
-	void exchangeData(int DualRank, DataStorage& dualData) {
+	void exchangeData(int dualRank, DataStorage& dualData) {
 		MPI_Status status;
-		MPI_Sendrecv(mProcData.data(), mBlockSize, MPI_DOUBLE, DualRank, 0, dualData.data(), dualData.size(), MPI_DOUBLE, DualRank, 0, MPI_COMM_WORLD, &status);
+		MPI_Sendrecv(mProcData.data(), mBlockSize, MPI_DOUBLE, dualRank, 0, dualData.data(), dualData.size(), MPI_DOUBLE, dualRank, 0, MPI_COMM_WORLD, &status);
 	}
 
 private:
