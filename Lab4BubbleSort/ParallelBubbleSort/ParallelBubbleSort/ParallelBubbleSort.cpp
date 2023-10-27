@@ -122,27 +122,27 @@ public:
 		serialBubbleSort();
 
 		int offset = 0;
-		SplitMode SplitMode = SplitMode::KeepFirstHalf;
+		SplitMode splitMode = SplitMode::KeepFirstHalf;
 
 		for (int i = 0; i < mMpiData.mProcNum; i++) {
 			if (i % 2 == 1) {
 				if (mMpiData.mProcRank % 2 == 1) {
 					offset = 1;
-					SplitMode = SplitMode::KeepFirstHalf;
+					splitMode = SplitMode::KeepFirstHalf;
 				}
 				else {
 					offset = -1;
-					SplitMode = SplitMode::KeepSecondHalf;
+					splitMode = SplitMode::KeepSecondHalf;
 				}
 			}
 			else {
 				if (mMpiData.mProcRank % 2 == 1) {
 					offset = -1;
-					SplitMode = SplitMode::KeepSecondHalf;
+					splitMode = SplitMode::KeepSecondHalf;
 				}
 				else {
 					offset = 1;
-					SplitMode = SplitMode::KeepFirstHalf;
+					splitMode = SplitMode::KeepFirstHalf;
 				}
 			}
 
@@ -163,7 +163,7 @@ public:
 
 			std::merge(mProcData.begin(), mProcData.end(), dualData.begin(), dualData.end(), mergedData.begin());
 
-			if (SplitMode == SplitMode::KeepFirstHalf) {
+			if (splitMode == SplitMode::KeepFirstHalf) {
 				std::copy(mergedData.begin(), mergedData.begin() + mBlockSize, mProcData.begin());
 			}
 			else {
