@@ -100,10 +100,10 @@ private:
 };
 
 void experiment(std::ofstream& ostrm, int size) {
-    SerialFloyd sorter(size);
+    SerialFloyd floyd(size);
 
     auto start = clock();
-    sorter.serialFloyd();
+    floyd.serialFloyd();
     auto finish = clock();
     auto duration = (finish - start) / double(CLOCKS_PER_SEC);
     ostrm << "Size = " << size << ", Time = " << duration << std::endl;
